@@ -907,7 +907,38 @@ if app_mode == "Portfolio Optimization":
                         line=dict(color='purple', width=3)
                     ))
                     
-                    # Add individual assets
+                    # Add the Capital Market Line (CML) if there's a "Maximum Sharpe Ratio" portfolio
+                    if "Maximum Sharpe Ratio" in portfolios:
+                        max_sharpe_metrics = portfolios["Maximum Sharpe Ratio"]["metrics"]
+                        max_sharpe_vol = max_sharpe_metrics['volatility'] * 100
+                        max_sharpe_ret = max_sharpe_metrics['return'] * 100
+                        
+                        # Create x values from 0 to max volatility on efficient frontier
+                        cml_x = np.linspace(0, max(ef_volatility) * 1.2, 100)
+                        # Calculate corresponding y values (y = rf + slope * x)
+                        slope = (max_sharpe_ret - risk_free_rate * 100) / max_sharpe_vol
+                        cml_y = risk_free_rate * 100 + slope * cml_x
+                        
+                        fig.add_trace(go.Scatter(
+                            x=cml_x,
+                            y=cml_y,
+                            mode='lines',
+                            name='Capital Market Line',
+                            line=dict(color='green', width=2, dash='dash')
+                        ))
+                        
+                        # Add risk-free rate point
+                        fig.add_trace(go.Scatter(
+                            x=[0],
+                            y=[risk_free_rate * 100],
+                            mode='markers+text',
+                            name='Risk-Free Rate',
+                            text=['Risk-Free Rate'],
+                            textposition="top center",
+                            marker=dict(size=10, color='green', symbol='circle')
+                        ))
+                    
+                    # Add individual assets with hover information
                     for i, ticker in enumerate(tickers):
                         fig.add_trace(go.Scatter(
                             x=[annual_volatility[i] * 100],
@@ -916,12 +947,21 @@ if app_mode == "Portfolio Optimization":
                             name=ticker,
                             text=[ticker],
                             textposition="top center",
-                            marker=dict(size=10)
+                            marker=dict(size=10),
+                            hovertemplate=
+                            f"<b>{ticker}</b><br>" +
+                            "Return: %{y:.2f}%<br>" +
+                            "Volatility: %{x:.2f}%<br>" +
+                            "Sharpe: " + f"{(annual_returns[i] - risk_free_rate) / annual_volatility[i]:.2f}" +
+                            "<extra></extra>"
                         ))
                     
-                    # Add optimized portfolios
+                    # Add optimized portfolios with hover information
                     for method, portfolio in portfolios.items():
                         metrics = portfolio["metrics"]
+                        marker_symbol = 'star' if method == "Maximum Sharpe Ratio" else 'diamond' if method == "Minimum Volatility" else 'circle'
+                        marker_size = 16 if method in ["Maximum Sharpe Ratio", "Minimum Volatility"] else 14
+                        
                         fig.add_trace(go.Scatter(
                             x=[metrics['volatility'] * 100],
                             y=[metrics['return'] * 100],
@@ -930,19 +970,108 @@ if app_mode == "Portfolio Optimization":
                             text=[method],
                             textposition="top center",
                             marker=dict(
-                                size=15,
+                                size=marker_size,
                                 color=colors.get(method, "purple"),
-                                symbol='star'
-                            )
+                                symbol=marker_symbol
+                            ),
+                            hovertemplate=
+                            f"<b>{method}</b><br>" +
+                            "Return: %{y:.2f}%<br>" +
+                            "Volatility: %{x:.2f}%<br>" +
+                            "Sharpe: " + f"{metrics['sharpe_ratio']:.2f}" +
+                            "<extra></extra>"
                         ))
+                    
+                    # Draw the minimum variance portfolio
+                    if "Minimum Volatility" in portfolios:
+                        min_vol_metrics = portfolios["Minimum Volatility"]["metrics"]
+                        min_vol_x = min_vol_metrics['volatility'] * 100
+                        
+                        # Add vertical line at minimum variance
+                        fig.add_shape(
+                            type="line",
+                            x0=min_vol_x,
+                            y0=0,
+                            x1=min_vol_x,
+                            y1=max(ef_returns) * 100,
+                            line=dict(
+                                color="blue",
+                                width=1,
+                                dash="dot",
+                            )
+                        )
+                    
+                    # Add annotations with arrows pointing to key portfolios
+                    if "Maximum Sharpe Ratio" in portfolios:
+                        max_sharpe_metrics = portfolios["Maximum Sharpe Ratio"]["metrics"]
+                        fig.add_annotation(
+                            x=max_sharpe_metrics['volatility'] * 100,
+                            y=max_sharpe_metrics['return'] * 100,
+                            text="Maximum Sharpe Ratio",
+                            showarrow=True,
+                            arrowhead=1,
+                            ax=40,
+                            ay=-40
+                        )
+                    
+                    if "Minimum Volatility" in portfolios:
+                        min_vol_metrics = portfolios["Minimum Volatility"]["metrics"]
+                        fig.add_annotation(
+                            x=min_vol_metrics['volatility'] * 100,
+                            y=min_vol_metrics['return'] * 100,
+                            text="Minimum Volatility",
+                            showarrow=True,
+                            arrowhead=1,
+                            ax=-40,
+                            ay=-40
+                        )
                     
                     # Update layout with the selected theme
                     fig.update_layout(
-                        title="Efficient Frontier",
+                        title="Efficient Frontier & Capital Market Line",
                         xaxis_title="Expected Volatility (%)",
                         yaxis_title="Expected Return (%)",
                         legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01),
-                        template=theme
+                        template=theme,
+                        height=600,
+                        hovermode="closest",
+                        xaxis=dict(
+                            range=[0, max(ef_volatility) * 1.2],
+                            zeroline=True,
+                            zerolinewidth=1,
+                            zerolinecolor='grey',
+                            gridcolor='lightgrey'
+                        ),
+                        yaxis=dict(
+                            range=[min(min(ef_returns) * 100, risk_free_rate * 100) * 0.9, max(ef_returns) * 100 * 1.1],
+                            zeroline=True,
+                            zerolinewidth=1,
+                            zerolinecolor='grey',
+                            gridcolor='lightgrey'
+                        )
+                    )
+                    
+                    # Add a hover tooltip with explanation
+                    fig.add_annotation(
+                        x=0.5,
+                        y=1.05,
+                        xref="paper",
+                        yref="paper",
+                        text="Hover over points for details",
+                        showarrow=False,
+                        font=dict(size=12, color="grey")
+                    )
+                    
+                    # Add more descriptive annotation about the efficient frontier
+                    fig.add_annotation(
+                        x=0.5,
+                        y=-0.15,
+                        xref="paper",
+                        yref="paper",
+                        text="The efficient frontier represents optimal portfolios offering the highest expected return for a given level of risk.",
+                        showarrow=False,
+                        font=dict(size=12),
+                        align="center"
                     )
                     
                     st.plotly_chart(fig, use_container_width=True)
@@ -1218,11 +1347,6 @@ if app_mode == "Portfolio Optimization":
                 benchmark_rolling_max = (1 + benchmark_returns).cumprod().cummax()
                 benchmark_drawdown = ((1 + benchmark_returns).cumprod() / benchmark_rolling_max) - 1
                 benchmark_max_drawdown = benchmark_drawdown.min()
-
-                # Add right after calculating benchmark_max_drawdown
-                benchmark_annual_return = benchmark_returns.mean() * 252
-                benchmark_annual_volatility = benchmark_returns.std() * np.sqrt(252)
-                benchmark_sharpe = (benchmark_annual_return - risk_free_rate) / benchmark_annual_volatility
                 
                 # SPY metrics if available
                 if 'S&P 500 (SPY)' in performance_df.columns:
