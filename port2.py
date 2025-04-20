@@ -113,20 +113,133 @@ with tab1:
             
             st.dataframe(stats)
             
-            # Returns distribution
-            st.subheader("Returns Distribution")
+            # Interactive Returns distribution
+            st.subheader("Distribution of Returns")
             
-            # Create subplot
-            fig = plt.figure(figsize=(12, 4 * len(stocks)))
+            # Allow users to select tickers to display
+            st.write("Select Tickers to Display")
+            selected_tickers = []
+            
+            # Create selection buttons in rows of 4
+            cols = st.columns(4)
             for i, stock in enumerate(stocks):
-                if stock in returns.columns:  # Check if the stock exists in the dataframe
-                    ax = fig.add_subplot(len(stocks), 1, i+1)
-                    sns.histplot(returns[stock], kde=True, ax=ax)
-                    ax.set_title(f"Daily Returns Distribution for {stock}")
-                    ax.axvline(x=0, color='r', linestyle='--')
+                col_idx = i % 4
+                with cols[col_idx]:
+                    if st.checkbox(stock, key=f"dist_check_{stock}"):
+                        selected_tickers.append(stock)
             
-            plt.tight_layout()
-            st.pyplot(fig)
+            # Show distribution if tickers are selected
+            if selected_tickers:
+                # Create a plot comparing distributions with normal fit overlay
+                import scipy.stats as stats
+                
+                # Use plotly for interactive visualization
+                dist_fig = go.Figure()
+                
+                colors = px.colors.qualitative.Plotly  # Get a set of colors
+                
+                for i, ticker in enumerate(selected_tickers):
+                    # Get returns data
+                    ticker_returns = returns[ticker].dropna()
+                    
+                    # Add histogram
+                    dist_fig.add_trace(go.Histogram(
+                        x=ticker_returns,
+                        name=f"{ticker} Returns",
+                        opacity=0.6,
+                        nbinsx=50,
+                        histnorm='probability density',
+                        marker_color=colors[i % len(colors)]
+                    ))
+                    
+                    # Add normal distribution fit
+                    mu, std = ticker_returns.mean(), ticker_returns.std()
+                    x = np.linspace(mu - 4*std, mu + 4*std, 100)
+                    pdf = stats.norm.pdf(x, mu, std)
+                    
+                    dist_fig.add_trace(go.Scatter(
+                        x=x,
+                        y=pdf,
+                        mode='lines',
+                        name=f"{ticker} Normal Fit",
+                        line=dict(color=colors[i % len(colors)], dash='dash')
+                    ))
+                
+                # Update layout
+                dist_fig.update_layout(
+                    title="Distribution of Returns vs Normal Distribution",
+                    xaxis_title="Returns",
+                    yaxis_title="Density",
+                    barmode='overlay',
+                    template="plotly_dark"
+                )
+                
+                # Show the plot
+                st.plotly_chart(dist_fig, use_container_width=True)
+                
+                # Additional distribution statistics
+                if st.checkbox("Show Distribution Statistics"):
+                    stats_data = []
+                    
+                    for ticker in selected_tickers:
+                        ticker_returns = returns[ticker].dropna()
+                        
+                        # Calculate statistics
+                        mean = ticker_returns.mean()
+                        std_dev = ticker_returns.std()
+                        skewness = ticker_returns.skew()
+                        kurtosis = ticker_returns.kurtosis()
+                        
+                        # Jarque-Bera test for normality
+                        jb_stat, jb_pvalue = stats.jarque_bera(ticker_returns)
+                        
+                        # Value at Risk (VaR) at 95% and 99% confidence
+                        var_95 = np.percentile(ticker_returns, 5)
+                        var_99 = np.percentile(ticker_returns, 1)
+                        
+                        # Expected Shortfall (Conditional VaR)
+                        es_95 = ticker_returns[ticker_returns <= var_95].mean()
+                        es_99 = ticker_returns[ticker_returns <= var_99].mean()
+                        
+                        stats_data.append({
+                            "Ticker": ticker,
+                            "Mean": mean,
+                            "Std Dev": std_dev,
+                            "Skewness": skewness,
+                            "Kurtosis": kurtosis,
+                            "JB p-value": jb_pvalue,
+                            "VaR (95%)": var_95,
+                            "VaR (99%)": var_99,
+                            "ES (95%)": es_95,
+                            "ES (99%)": es_99
+                        })
+                    
+                    # Create dataframe and display
+                    stats_df = pd.DataFrame(stats_data)
+                    st.dataframe(stats_df.set_index("Ticker").style.format({
+                        "Mean": "{:.4f}",
+                        "Std Dev": "{:.4f}",
+                        "Skewness": "{:.4f}",
+                        "Kurtosis": "{:.4f}",
+                        "JB p-value": "{:.4f}",
+                        "VaR (95%)": "{:.4f}",
+                        "VaR (99%)": "{:.4f}",
+                        "ES (95%)": "{:.4f}",
+                        "ES (99%)": "{:.4f}"
+                    }))
+                    
+                    # Normality interpretation
+                    st.write("### Normality Interpretation")
+                    for ticker in selected_tickers:
+                        ticker_returns = returns[ticker].dropna()
+                        jb_stat, jb_pvalue = stats.jarque_bera(ticker_returns)
+                        
+                        if jb_pvalue < 0.05:
+                            st.write(f"🔴 **{ticker}**: Returns are **not normally distributed** (JB p-value: {jb_pvalue:.4f}).")
+                        else:
+                            st.write(f"🟢 **{ticker}**: Returns appear to be normally distributed (JB p-value: {jb_pvalue:.4f}).")
+            else:
+                st.info("Please select at least one ticker to display its distribution.")
             
             # Correlation matrix
             st.subheader("Correlation Matrix")
