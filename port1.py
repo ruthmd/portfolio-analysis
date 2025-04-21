@@ -6,6 +6,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 import plotly.express as px
 import seaborn as sns
+from scipy.optimize import minimize
+from scipy.cluster.hierarchy import linkage, dendrogram
+from scipy.spatial.distance import squareform
 
 st.set_page_config(layout="wide")
 st.title("📊 Portfolio Analysis App")
@@ -45,8 +48,10 @@ def portfolio_stats(weighted_returns):
 # ============================ TABS ============================
 tabs = st.tabs(["Asset Analysis", "Portfolio Comparison", "Mean Risk", "Risk Building"])
 
+
 # -------------------- 1. Asset Analysis --------------------
 with tabs[0]:
+    # show_model_inputs = False
     st.header("📈 Asset Analysis")
     if not tickers:
         st.warning("Please enter at least one ticker in the sidebar.")
@@ -89,7 +94,7 @@ with tabs[0]:
         fig.update_layout(height=400)
         st.plotly_chart(fig, use_container_width=True)
 
-        st.subheader("🏢 Sector Allocation (Equal Weighted)")
+        st.subheader("🏢 Sector Allocation")
         equal_weights = [1 / len(tickers)] * len(tickers)
         sectors = {}
         for i, ticker in enumerate(tickers):
@@ -111,37 +116,563 @@ with tabs[0]:
 # -------------------- 2. Portfolio Comparison --------------------
 with tabs[1]:
     st.header("🔄 Portfolio Comparison")
+    
     if not tickers:
         st.warning("Please enter at least one ticker in the sidebar.")
         st.stop()
-    default_weights = [round(1 / len(tickers), 2)] * len(tickers)
-    weights = list(map(float, st.text_input("Weights (comma-separated, must sum to 1)", ",".join(map(str, default_weights))).split(",")))
 
-    if len(weights) != len(tickers) or not np.isclose(sum(weights), 1.0):
-        st.warning("Ensure weights match number of tickers and sum to 1.")
+    prices = get_price_data(tickers, start, end)
+    if prices.empty:
+        st.warning("No price data returned for selected tickers.")
         st.stop()
 
-    data = get_price_data(tickers, start, end)
-    if not data.empty:
-        returns, cumulative = compute_portfolio_returns(data, weights)
-        st.subheader("📈 Portfolio vs Individual Assets")
-        all_cum = pd.DataFrame({"Portfolio": cumulative})
-        for ticker in data.columns:
-            all_cum[ticker] = (1 + data[ticker].pct_change(fill_method=None).dropna()).cumprod()
-        st.line_chart(all_cum)
+    returns = compute_returns(prices)
 
-        st.subheader("📊 Final Cumulative Returns")
-        final_returns = all_cum.iloc[-1].to_frame(name="Final Return")
-        st.bar_chart(final_returns)
+    # Fix shape mismatch by filtering valid tickers
+    valid_tickers = list(returns.columns)
+    if set(tickers) != set(valid_tickers):
+        st.warning(f"Some tickers dropped due to missing data: {set(tickers) - set(valid_tickers)}")
+    tickers = valid_tickers
 
-        st.subheader("📉 Stats")
-        mean, vol, sharpe = portfolio_stats(returns)
-        st.write(f"Return: {mean:.4f}, Volatility: {vol:.4f}, Sharpe Ratio: {sharpe:.4f}")
+    vol = returns.std()
+
+    # st.subheader("Select Models to Compare")
+    model_options = [
+        "Equal Weighted",
+        "Inverse Volatility",
+        "Random",
+        "Minimum Variance",
+        "Target Return Portfolio",
+        "Maximum Diversification",
+        "Maximum Sharpe Ratio",
+        "Minimum CVaR",
+        "Risk Parity (Variance)",
+        "Risk Budgeting (CVaR)",
+        "Risk Parity (Covariance Shrinkage)",
+        "Hierarchical Risk Parity (HRP)",
+        "Bayesian Mean-Variance"
+    ]
+    selected_models = st.multiselect("📍 Select Models to Compare", model_options, default=["Equal Weighted", "Minimum CVaR"])
+
+    # -------------------- Dynamic Inputs for Models --------------------
+    if "Target Return Portfolio" in selected_models:
+        st.subheader("🎯 Set Target Return")
+        target_return = st.number_input(
+            "Minimum Expected Return (%)",
+            min_value=0.0,
+            max_value=100.0,
+            value=10.0,
+            step=0.5,
+            help="Set the minimum annual return you'd like this portfolio to target."
+        ) / 100
+
+        if target_return < 0.05:
+            st.caption("🧮 Very conservative target")
+        elif target_return <= 0.15:
+            st.caption("⚖️ Balanced growth objective")
+        else:
+            st.caption("🚀 Aggressive return target")
     else:
-        st.warning("No data returned for selected tickers.")
+        target_return = 0.05
+
+
+    if "Bayesian Mean-Variance" in selected_models:
+        shrinkage_level = st.slider(
+            "Shrinkage Level (τ): Prior vs. Sample Balance",
+            min_value=0.01,
+            max_value=1.0,
+            value=0.05,
+            step=0.01,
+            help="Lower = rely more on historical data. Higher = rely more on prior belief."
+        )
+
+        if shrinkage_level <= 0.05:
+            st.caption("🧮 Mostly trusting historical data (Sample-driven)")
+        elif shrinkage_level <= 0.25:
+            st.caption("⚖️ Balanced trust between prior and data")
+        else:
+            st.caption("📐 Strong trust in prior (Shrinkage-dominant)")
+    else:
+        shrinkage_level = 0.05
+
+
+    if "Minimum CVaR" in selected_models or "Risk Budgeting (CVaR)" in selected_models:
+        alpha = st.slider(
+            "CVaR Confidence Level (α)",
+            min_value=0.85,
+            max_value=0.99,
+            step=0.01,
+            value=0.95,
+            help="Tail threshold for CVaR calculations."
+        )
+
+        if alpha <= 0.90:
+            st.caption("⚠️ Looser tail: more risk assumed")
+        elif alpha <= 0.97:
+            st.caption("✅ Balanced tail confidence")
+        else:
+            st.caption("🛡️ Very conservative tail control")
+    else:
+        alpha = 0.95
+
+
+    if "Risk Parity (Covariance Shrinkage)" in selected_models:
+        shrinkage_lambda = st.slider(
+            "Covariance Shrinkage Level (λ)",
+            min_value=0.0,
+            max_value=1.0,
+            step=0.05,
+            value=0.1,
+            help="0 = pure sample covariance, 1 = pure diagonal target"
+        )
+
+        if shrinkage_lambda <= 0.1:
+            st.caption("📊 Mostly sample covariance")
+        elif shrinkage_lambda <= 0.4:
+            st.caption("⚖️ Blended covariance estimate")
+        else:
+            st.caption("📐 Mostly shrinkage target matrix")
+    else:
+        shrinkage_lambda = 0.1
+
+    weight_dict = {}
+
+    if "Equal Weighted" in selected_models:
+        w_eq = np.ones(len(tickers)) / len(tickers)
+        weight_dict["Equal Weighted"] = w_eq
+
+    if "Inverse Volatility" in selected_models:
+        inv_vol = 1 / vol
+        inv_vol = inv_vol / inv_vol.sum()
+        weight_dict["Inverse Volatility"] = inv_vol.values
+
+    if "Random" in selected_models:
+        w = np.random.random(len(tickers))
+        w /= w.sum()
+        weight_dict["Random"] = w
+
+
+    if "Minimum Variance" in selected_models:
+        # Get the covariance matrix
+        cov = returns.cov().values
+        
+        # Add a small regularization term to ensure positive definiteness
+        # This helps with numerical stability
+        n_assets = cov.shape[0]
+        cov_reg = cov + np.eye(n_assets) * 1e-8
+        
+        # Define the objective function for portfolio variance
+        def portfolio_variance(w):
+            return np.dot(w.T, np.dot(cov_reg, w))
+        
+        # Define constraints: weights sum to 1
+        cons = ({'type': 'eq', 'fun': lambda w: np.sum(w) - 1})
+        
+        # Define bounds: no short selling (all weights between 0 and 1)
+        bounds = tuple((0, 1) for _ in range(n_assets))
+        
+        # Initial guess: equal weights
+        init_guess = np.ones(n_assets) / n_assets
+        
+        # Try multiple starting points to avoid local minima
+        best_result = None
+        best_variance = float('inf')
+        
+        for attempt in range(3):
+            if attempt == 0:
+                start_guess = init_guess
+            else:
+                # Random starting point that sums to 1
+                rand_weights = np.random.random(n_assets)
+                start_guess = rand_weights / np.sum(rand_weights)
+            
+            # Run optimization with relaxed tolerance
+            try:
+                result = minimize(
+                    portfolio_variance, 
+                    start_guess, 
+                    method='SLSQP', 
+                    bounds=bounds, 
+                    constraints=cons,
+                    options={'maxiter': 1000, 'ftol': 1e-9}
+                )
+                
+                # If optimization succeeded and found a lower variance
+                if result.success and result.fun < best_variance:
+                    best_result = result
+                    best_variance = result.fun
+            except Exception as e:
+                # Log the error but don't interrupt the loop
+                st.debug(f"Optimization attempt {attempt+1} failed: {str(e)}")
+        
+        # Use the best result if available
+        if best_result is not None and best_result.success:
+            # Ensure weights sum to 1 (fix any small numerical issues)
+            weights = best_result.x
+            weights = weights / np.sum(weights)
+            
+            # Store in the weight dictionary
+            weight_dict["Minimum Variance"] = weights
+
+
+    if "Target Return Portfolio" in selected_models:
+        mean_ret = returns.mean() * 252  # annualized
+        cov = returns.cov() * 252
+
+        def portfolio_var(w):
+            return np.dot(w.T, np.dot(cov, w))
+
+        cons = (
+            {'type': 'eq', 'fun': lambda w: np.sum(w) - 1},
+            {'type': 'ineq', 'fun': lambda w: np.dot(w, mean_ret) - target_return}
+        )
+        bounds = tuple((0, 1) for _ in range(len(tickers)))
+        init_guess = np.ones(len(tickers)) / len(tickers)
+
+        result = minimize(portfolio_var, init_guess, method='SLSQP', bounds=bounds, constraints=cons)
+        if result.success:
+            weight_dict["Target Return Portfolio"] = result.x
+
+    if "Maximum Diversification" in selected_models:
+        cov = returns.cov()
+        vol_vec = vol.values
+        def diversification_ratio(w):
+            return - (np.dot(w, vol_vec) / np.sqrt(np.dot(w.T, np.dot(cov.values, w))))
+        cons = ({'type': 'eq', 'fun': lambda w: np.sum(w) - 1})
+        bounds = tuple((0, 1) for _ in range(len(tickers)))
+        init_guess = np.ones(len(tickers)) / len(tickers)
+        result = minimize(diversification_ratio, init_guess, method='SLSQP', bounds=bounds, constraints=cons)
+        if result.success:
+            weight_dict["Maximum Diversification"] = result.x
+
+    if "Maximum Sharpe Ratio" in selected_models:
+        mean_ret = returns.mean()
+        cov = returns.cov()
+        def negative_sharpe(w):
+            port_ret = np.dot(w, mean_ret)
+            port_vol = np.sqrt(np.dot(w.T, np.dot(cov.values, w)))
+            return -port_ret / port_vol
+        cons = ({'type': 'eq', 'fun': lambda w: np.sum(w) - 1})
+        bounds = tuple((0, 1) for _ in range(len(tickers)))
+        init_guess = np.ones(len(tickers)) / len(tickers)
+        result = minimize(negative_sharpe, init_guess, method='SLSQP', bounds=bounds, constraints=cons)
+        if result.success:
+            weight_dict["Maximum Sharpe Ratio"] = result.x
+
+    if "Minimum CVaR" in selected_models:
+        # alpha = 0.95
+        returns_array = returns.values
+        def portfolio_cvar(weights):
+            port_ret = np.dot(returns_array, weights)
+            var_thresh = np.percentile(port_ret, (1 - alpha) * 100)
+            cvar = -port_ret[port_ret <= var_thresh].mean()
+            return cvar
+        cons = ({'type': 'eq', 'fun': lambda w: np.sum(w) - 1})
+        bounds = tuple((0, 1) for _ in range(len(tickers)))
+        init_guess = np.ones(len(tickers)) / len(tickers)
+        result = minimize(portfolio_cvar, init_guess, method='SLSQP', bounds=bounds, constraints=cons)
+        if result.success:
+            weight_dict["Minimum CVaR"] = result.x
+
+
+    if "Risk Parity (Variance)" in selected_models:
+        cov = returns.cov().values
+        
+        def risk_parity_objective(weights):
+            # Avoid division by zero by setting a minimum weight
+            weights = np.maximum(weights, 1e-8)
+            weights = weights / np.sum(weights)  # Normalize weights
+            
+            portfolio_variance = np.dot(weights.T, np.dot(cov, weights))
+            portfolio_volatility = np.sqrt(portfolio_variance)
+            
+            # Calculate risk contributions
+            marginal_risk_contribution = np.dot(cov, weights)
+            risk_contribution = weights * marginal_risk_contribution / portfolio_volatility
+            
+            # Target: equal risk contribution
+            target_risk = portfolio_volatility / len(weights)
+            
+            # Return sum of squared deviations
+            return np.sum((risk_contribution - target_risk) ** 2)
+        
+        # Multi-start optimization to avoid local minima
+        best_weights = None
+        best_score = float('inf')
+        
+        # Define constraints and bounds
+        cons = ({'type': 'eq', 'fun': lambda w: np.sum(w) - 1.0})
+        bounds = tuple((0.001, 1.0) for _ in range(len(tickers)))
+        
+        # Try multiple starting points (3 attempts)
+        for attempt in range(3):
+            if attempt == 0:
+                init_guess = np.ones(len(tickers)) / len(tickers)  # Equal weight
+            else:
+                init_guess = np.random.random(len(tickers))
+                init_guess = init_guess / np.sum(init_guess)
+            
+            # Run optimization with relaxed tolerance
+            result = minimize(
+                risk_parity_objective,
+                init_guess,
+                method='SLSQP',
+                bounds=bounds,
+                constraints=cons,
+                options={'maxiter': 500, 'ftol': 1e-8}
+            )
+            
+            if result.success and (best_weights is None or result.fun < best_score):
+                best_score = result.fun
+                best_weights = result.x
+                
+                # If we're very close to perfect solution, break early
+                if result.fun < 1e-6:
+                    break
+        
+        # Use the best result or fall back to equal weights
+        if best_weights is not None:
+            # Ensure weights sum to 1
+            best_weights = best_weights / np.sum(best_weights)
+            weight_dict["Risk Parity (Variance)"] = best_weights
+
+
+    if "Risk Budgeting (CVaR)" in selected_models:
+        # Get returns data
+        returns_array = returns.values
+        
+        # Define CVaR calculation function
+        def compute_cvar(weights):
+            port_ret = np.dot(returns_array, weights)
+            var_thresh = np.percentile(port_ret, (1 - alpha) * 100)
+            # Filter returns below VaR and calculate mean
+            tail_returns = port_ret[port_ret <= var_thresh]
+            if len(tail_returns) > 0:
+                cvar = -tail_returns.mean()
+            else:
+                cvar = -var_thresh  # Fallback if no returns are in the tail
+            return cvar
+        
+        # Calculate marginal CVaR for each asset
+        def marginal_cvar(weights):
+            epsilon = 1e-5  # Small perturbation for numerical differentiation
+            base_cvar = compute_cvar(weights)
+            mcvar = np.zeros(len(weights))
+            
+            for i in range(len(weights)):
+                # Create perturbed weights
+                w_up = weights.copy()
+                
+                # Ensure we don't make any weight negative
+                if weights[i] > epsilon:
+                    w_up[i] += epsilon
+                else:
+                    w_up[i] = epsilon
+                    
+                # Renormalize weights to sum to 1
+                w_up = w_up / np.sum(w_up)
+                
+                # Calculate marginal change in CVaR
+                cvar_up = compute_cvar(w_up)
+                mcvar[i] = (cvar_up - base_cvar) / epsilon
+            
+            return mcvar
+        
+        # Define risk budget objective function
+        def cvar_risk_budget_obj(weights):
+            # Ensure weights are positive and sum to 1
+            weights = np.maximum(weights, 0)
+            weights = weights / np.sum(weights)
+            
+            # Calculate marginal CVaR
+            mc = marginal_cvar(weights)
+            
+            # Calculate risk contribution
+            rc = weights * mc
+            
+            # Calculate total risk
+            total_risk = np.sum(rc)
+            
+            # Target equal risk contribution
+            target_risk = total_risk / len(weights)
+            
+            # Minimize sum of squared deviations from target
+            risk_diffs = rc - target_risk
+            return np.sum(risk_diffs**2)
+        
+        # Optimization constraints
+        cons = ({'type': 'eq', 'fun': lambda w: np.sum(w) - 1})
+        
+        # Bound weights to be between 0.01 and 1
+        bounds = tuple((0.01, 1) for _ in range(len(tickers)))
+        
+        # Initial guess - equal weights
+        init_guess = np.ones(len(tickers)) / len(tickers)
+        
+        # Use SLSQP optimizer with multiple starting points
+        best_result = None
+        best_obj = float('inf')
+        
+        # Try multiple starting points for better convergence
+        for _ in range(3):
+            if _ > 0:  # Skip first iteration as it uses equal weights
+                # Randomize starting weights for subsequent attempts
+                rand_weights = np.random.random(len(tickers))
+                init_guess = rand_weights / np.sum(rand_weights)
+                
+            # Run optimization
+            attempt = minimize(
+                cvar_risk_budget_obj, 
+                init_guess, 
+                method='SLSQP', 
+                bounds=bounds, 
+                constraints=cons,
+                options={'maxiter': 500}
+            )
+            
+            # Keep best result
+            if attempt.success and attempt.fun < best_obj:
+                best_result = attempt
+                best_obj = attempt.fun
+        
+        # Use the best result if successful, otherwise use equal weights
+        if best_result is not None and best_result.success:
+            # Normalize weights to ensure they sum to 1
+            result_weights = best_result.x
+            result_weights = result_weights / np.sum(result_weights)
+            weight_dict["Risk Budgeting (CVaR)"] = result_weights
+    
+
+    if "Risk Parity (Covariance Shrinkage)" in selected_models:
+        shrinkage_lambda = shrinkage_lambda
+        S = returns.cov().values
+        avg_var = np.mean(np.diag(S))
+        T = np.eye(len(tickers)) * avg_var
+        shrunk_cov = shrinkage_lambda * T + (1 - shrinkage_lambda) * S
+
+        def risk_parity_shrinkage(weights):
+            port_vol = np.sqrt(np.dot(weights.T, np.dot(shrunk_cov, weights)))
+            mrc = np.dot(shrunk_cov, weights) / port_vol
+            rc = weights * mrc
+            rc = rc / port_vol
+            target = np.ones(len(weights)) * (port_vol / len(weights))
+            return np.sum((rc - target) ** 2)
+
+        cons = ({'type': 'eq', 'fun': lambda w: np.sum(w) - 1})
+        bounds = tuple((0, 1) for _ in range(len(tickers)))
+        init_guess = np.ones(len(tickers)) / len(tickers)
+        result = minimize(risk_parity_shrinkage, init_guess, method='SLSQP', bounds=bounds, constraints=cons)
+        if result.success:
+            weight_dict["Risk Parity (Covariance Shrinkage)"] = result.x
+
+
+    if "Hierarchical Risk Parity (HRP)" in selected_models:
+        cov = returns.cov().values
+        corr = returns.corr().values
+
+        # Step 1: Compute distance matrix from correlation
+        dist = np.sqrt(0.5 * (1 - corr))
+        dist = np.clip(dist, 0, 1)  # just in case
+
+        # Step 2: Hierarchical clustering
+        linkage_matrix = linkage(squareform(dist), method='single')
+
+        # Step 3: Quasi-diagonalization (sort order)
+        def get_quasi_diag(linkage_matrix):
+            leaf_order = dendrogram(linkage_matrix, no_plot=True)['leaves']
+            return leaf_order
+
+        sorted_idx = get_quasi_diag(linkage_matrix)
+
+        # Step 4: Recursive bisection
+        def hrp_allocation(cov, sort_order):
+            weights = pd.Series(1.0, index=sort_order)
+            cluster_items = [sort_order]
+
+            while cluster_items:
+                new_clusters = []
+                for cluster in cluster_items:
+                    if len(cluster) <= 1:
+                        continue
+                    split = len(cluster) // 2
+                    left = cluster[:split]
+                    right = cluster[split:]
+
+                    cov_sub = pd.DataFrame(cov).iloc[cluster, cluster].values
+                    var_left = np.dot(np.ones(len(left)), np.dot(cov[np.ix_(left, left)], np.ones(len(left))))
+                    var_right = np.dot(np.ones(len(right)), np.dot(cov[np.ix_(right, right)], np.ones(len(right))))
+                    alpha = 1 - var_left / (var_left + var_right)
+
+                    weights[left] *= alpha
+                    weights[right] *= (1 - alpha)
+
+                    new_clusters += [left, right]
+                cluster_items = new_clusters
+            return weights / weights.sum()
+
+        hrp_weights = hrp_allocation(cov, sorted_idx)
+        # Reorder to match the original ticker order
+        w_final = np.zeros(len(tickers))
+        for i, idx in enumerate(hrp_weights.index):
+            w_final[idx] = hrp_weights.iloc[i]
+        weight_dict["Hierarchical Risk Parity (HRP)"] = w_final
+
+
+    if "Bayesian Mean-Variance" in selected_models:
+        sample_mean = returns.mean()
+        sample_cov = returns.cov()
+
+        mu_0 = pd.Series(sample_mean.mean(), index=sample_mean.index)
+        tau = shrinkage_level
+
+
+        # prior_cov = np.eye(len(tickers)) * sample_cov.values.mean()
+        prior_cov = tau * np.eye(len(tickers)) * sample_cov.values.mean()
+
+
+        post_cov = np.linalg.inv(
+            np.linalg.inv(sample_cov.values) + np.linalg.inv(prior_cov)
+        )
+        post_mean = post_cov @ (
+            np.linalg.inv(sample_cov.values) @ sample_mean.values +
+            np.linalg.inv(prior_cov) @ mu_0.values
+        )
+
+        def neg_sharpe(w):
+            port_ret = np.dot(w, post_mean)
+            port_vol = np.sqrt(np.dot(w.T, np.dot(sample_cov.values, w)))
+            return -port_ret / port_vol
+
+        cons = ({'type': 'eq', 'fun': lambda w: np.sum(w) - 1})
+        bounds = tuple((0, 1) for _ in range(len(tickers)))
+        init_guess = np.ones(len(tickers)) / len(tickers)
+
+        result = minimize(neg_sharpe, init_guess, method='SLSQP', bounds=bounds, constraints=cons)
+        if result.success:
+            weight_dict["Bayesian Mean-Variance"] = result.x
+
+
+    if weight_dict:
+        weight_df = pd.DataFrame(weight_dict, index=tickers)
+        weight_df = weight_df.T  # portfolios as rows
+
+        # st.subheader("📊 Portfolio Composition")
+        fig = px.bar(
+            weight_df,
+            barmode="stack",
+            orientation="v",
+            title="Portfolio Allocation by Model",
+            labels={"value": "Weight", "index": "Portfolios", "variable": "Assets"},
+        )
+        fig.update_layout(yaxis_tickformat=".0%", xaxis_title="Portfolios", yaxis_title="Weight")
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("Select at least one model to compare.")
+
 
 # -------------------- 3. Mean Risk --------------------
 with tabs[2]:
+    # show_model_inputs = False
     st.header("📉 Mean-Variance Optimization")
     if not tickers:
         st.warning("Please enter at least one ticker in the sidebar.")
@@ -213,6 +744,7 @@ with tabs[2]:
 
 # -------------------- 4. Risk Builder --------------------
 with tabs[3]:
+    # show_model_inputs = False
     st.header("🏗️ Risk Builder")
     if "saved_portfolios" not in st.session_state:
         st.session_state["saved_portfolios"] = {}
