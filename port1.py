@@ -1,25 +1,29 @@
-# portfolio_app.py (final stable version)
+# portfolio_app.py (updated: shared sidebar used in all tabs)
 import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+import plotly.express as px
 import seaborn as sns
 
 st.set_page_config(layout="wide")
 st.title("📊 Portfolio Analysis App")
 
+# ============================ SIDEBAR ============================
+st.sidebar.header("⚙️ Portfolio Settings")
+tickers = [t.strip().upper() for t in st.sidebar.text_input("Enter ticker symbols", "AAPL, MSFT, GOOGL").split(",")]
+start = st.sidebar.date_input("Start Date", pd.to_datetime("2022-01-01"))
+end = st.sidebar.date_input("End Date", pd.to_datetime("2024-12-31"))
+
 # ============================ UTILS ============================
 def get_price_data(tickers, start, end):
     tickers = [t.strip().upper() for t in tickers]
     data = yf.download(tickers, start=start, end=end, progress=False)
-
     if isinstance(data.columns, pd.MultiIndex):
         data = data['Close']
-
     if isinstance(data, pd.Series):
         data = data.to_frame()
-
     data = data.dropna(axis=1, how='all')
     return data
 
@@ -44,75 +48,105 @@ tabs = st.tabs(["Asset Analysis", "Portfolio Comparison", "Mean Risk", "Risk Bui
 # -------------------- 1. Asset Analysis --------------------
 with tabs[0]:
     st.header("📈 Asset Analysis")
-    tickers = [t.strip().upper() for t in st.text_input("Enter ticker symbols", "AAPL, MSFT, GOOGL").split(",")]
-    start = st.date_input("Start Date", pd.to_datetime("2022-01-01"))
-    end = st.date_input("End Date", pd.to_datetime("2024-12-31"))
+    if not tickers:
+        st.warning("Please enter at least one ticker in the sidebar.")
+        st.stop()
     prices = get_price_data(tickers, start, end)
-
     if not prices.empty:
-        st.subheader("Price Chart")
+        st.subheader("ℹ️ Asset Information")
+        asset_info = []
+        for ticker in tickers:
+            try:
+                info = yf.Ticker(ticker).info
+                asset_info.append({"Ticker": ticker, "Sector": info.get("sector", "N/A"), "Industry": info.get("industry", "N/A"), "Market Cap": f"${info.get('marketCap', 0) / 1e9:.2f} B" if info.get('marketCap') else "N/A", "Country": info.get("country", "N/A")})
+            except:
+                asset_info.append({"Ticker": ticker, "Sector": "N/A", "Industry": "N/A", "Market Cap": "N/A", "Country": "N/A"})
+        df_info = pd.DataFrame(asset_info).set_index("Ticker")
+        st.dataframe(df_info)
+
+        st.subheader("📈 Price Chart")
         st.line_chart(prices)
 
+        st.subheader("📈 Daily Returns")
         returns = compute_returns(prices)
-        st.subheader("Returns")
         st.line_chart(returns)
 
-        st.subheader("Basic Statistics")
-        stats = pd.DataFrame({
-            "Mean Return": returns.mean(),
-            "Volatility": returns.std(),
-            "Sharpe Ratio": returns.mean() / returns.std()
-        })
-        st.dataframe(stats.style.format("{:.4f}"))
+        returns = compute_returns(prices)
 
-        st.subheader("Correlation Heatmap")
-        # fig, ax = plt.subplots()
-        # sns.heatmap(returns.corr(), annot=True, cmap="coolwarm", ax=ax)
-        # st.pyplot(fig)
+        st.subheader("📊 Basic Statistics")
+        stats = pd.DataFrame({"Mean Return": returns.mean(), "Volatility": returns.std(), "Sharpe Ratio": returns.mean() / returns.std()})
+        stats.index.name = "Ticker"
+        stats_reset = stats.reset_index()
+        stats_melt = stats_reset.melt(id_vars="Ticker", var_name="Metric", value_name="Value")
+        fig = px.bar(stats_melt, x="Ticker", y="Value", color="Metric", barmode="group", title="Mean Return, Volatility, and Sharpe Ratio by Asset")
+        st.plotly_chart(fig, use_container_width=True)
+        # if st.toggle("📋 Show raw statistics table"):
+        #     st.dataframe(stats.style.format("{:.4f}"))
 
-        fig, ax = plt.subplots(figsize=(6, 4))  # smaller width and height
-        sns.heatmap(returns.corr(), annot=True, cmap="coolwarm", ax=ax)
-        st.pyplot(fig)
+        st.subheader("📊 Correlation Heatmap")
+        corr_matrix = returns.corr().round(2)
+        fig = px.imshow(corr_matrix, text_auto=True, color_continuous_scale="RdBu", title="Correlation Matrix of Returns")
+        fig.update_layout(height=400)
+        st.plotly_chart(fig, use_container_width=True)
+
+        st.subheader("🏢 Sector Allocation (Equal Weighted)")
+        equal_weights = [1 / len(tickers)] * len(tickers)
+        sectors = {}
+        for i, ticker in enumerate(tickers):
+            try:
+                sector = yf.Ticker(ticker).info.get("sector", "Unknown")
+                sectors[sector] = sectors.get(sector, 0) + equal_weights[i]
+            except:
+                sectors["Unknown"] = sectors.get("Unknown", 0) + equal_weights[i]
+        total = sum(sectors.values())
+        sector_weights = {k: v / total for k, v in sectors.items()}
+        sector_df = pd.DataFrame(list(sector_weights.items()), columns=["Sector", "Weight"])
+        fig = px.pie(sector_df, values="Weight", names="Sector", title="Sector Allocation", hole=0.3)
+        st.plotly_chart(fig, use_container_width=True)
+
+        
     else:
         st.warning("No data available for selection.")
 
 # -------------------- 2. Portfolio Comparison --------------------
 with tabs[1]:
     st.header("🔄 Portfolio Comparison")
-    tickers = [t.strip().upper() for t in st.text_input("Tickers (comma-separated)", "AAPL, MSFT, GOOGL").split(",")]
-    start = st.date_input("Start Date", pd.to_datetime("2022-01-01"), key="pc_start")
-    end = st.date_input("End Date", pd.to_datetime("2024-12-31"), key="pc_end")
+    if not tickers:
+        st.warning("Please enter at least one ticker in the sidebar.")
+        st.stop()
     default_weights = [round(1 / len(tickers), 2)] * len(tickers)
-    weights = list(map(float, st.text_input("Weights", ",".join(map(str, default_weights))).split(",")))
+    weights = list(map(float, st.text_input("Weights (comma-separated, must sum to 1)", ",".join(map(str, default_weights))).split(",")))
 
     if len(weights) != len(tickers) or not np.isclose(sum(weights), 1.0):
         st.warning("Ensure weights match number of tickers and sum to 1.")
+        st.stop()
+
+    data = get_price_data(tickers, start, end)
+    if not data.empty:
+        returns, cumulative = compute_portfolio_returns(data, weights)
+        st.subheader("📈 Portfolio vs Individual Assets")
+        all_cum = pd.DataFrame({"Portfolio": cumulative})
+        for ticker in data.columns:
+            all_cum[ticker] = (1 + data[ticker].pct_change(fill_method=None).dropna()).cumprod()
+        st.line_chart(all_cum)
+
+        st.subheader("📊 Final Cumulative Returns")
+        final_returns = all_cum.iloc[-1].to_frame(name="Final Return")
+        st.bar_chart(final_returns)
+
+        st.subheader("📉 Stats")
+        mean, vol, sharpe = portfolio_stats(returns)
+        st.write(f"Return: {mean:.4f}, Volatility: {vol:.4f}, Sharpe Ratio: {sharpe:.4f}")
     else:
-        data = get_price_data(tickers, start, end)
-        if not data.empty:
-            returns, cumulative = compute_portfolio_returns(data, weights)
-
-            st.subheader("Portfolio vs Individual Assets")
-            all_cum = pd.DataFrame({"Portfolio": cumulative})
-            for ticker in data.columns:
-                all_cum[ticker] = (1 + data[ticker].pct_change(fill_method=None).dropna()).cumprod()
-            st.line_chart(all_cum)
-
-            st.subheader("Final Cumulative Returns")
-            st.bar_chart(all_cum.iloc[-1])
-
-            st.subheader("Stats")
-            mean, vol, sharpe = portfolio_stats(returns)
-            st.write(f"Return: {mean:.4f}, Volatility: {vol:.4f}, Sharpe Ratio: {sharpe:.4f}")
-        else:
-            st.warning("No data returned for these tickers.")
+        st.warning("No data returned for selected tickers.")
 
 # -------------------- 3. Mean Risk --------------------
 with tabs[2]:
     st.header("📉 Mean-Variance Optimization")
-    tickers = [t.strip().upper() for t in st.text_input("Enter ticker symbols", "AAPL, MSFT, GOOGL", key="mv_t").split(",")]
-    start = st.date_input("Start Date", pd.to_datetime("2022-01-01"), key="mv_s")
-    end = st.date_input("End Date", pd.to_datetime("2024-12-31"), key="mv_e")
+    if not tickers:
+        st.warning("Please enter at least one ticker in the sidebar.")
+        st.stop()
+
     allow_short = st.checkbox("Allow Short Selling", value=False)
     num_portfolios = st.slider("Number of Portfolios", 100, 3000, 1000)
     alpha = st.slider("CVaR/VaR Confidence", 0.90, 0.99, 0.95)
@@ -123,14 +157,8 @@ with tabs[2]:
         st.error("No returns could be calculated from the available price data.")
         st.stop()
 
-    valid_tickers = list(returns.columns)
-    if set(tickers) != set(valid_tickers):
-        st.warning(f"Dropped due to missing data: {set(tickers) - set(valid_tickers)}")
-    tickers = valid_tickers
-
     mean_r = returns.mean()
     cov = returns.cov()
-
     result = []
     for _ in range(num_portfolios):
         weights = np.random.uniform(-1, 1, len(tickers)) if allow_short else np.random.dirichlet(np.ones(len(tickers)))
@@ -154,7 +182,7 @@ with tabs[2]:
     best = df.iloc[df["Sharpe"].idxmax()]
     st.subheader("Efficient Frontier")
     fig, ax = plt.subplots()
-    sc = ax.scatter(df["Volatility"], df["Return"], c=df["Sharpe"], cmap="viridis")
+    ax.scatter(df["Volatility"], df["Return"], c=df["Sharpe"], cmap="viridis")
     ax.scatter(best["Volatility"], best["Return"], color="red", s=100, label="Max Sharpe")
     ax.set_xlabel("Volatility")
     ax.set_ylabel("Return")
@@ -184,18 +212,16 @@ with tabs[2]:
     })
 
 # -------------------- 4. Risk Builder --------------------
-# (To be appended or reused from previous version as needed)
 with tabs[3]:
     st.header("🏗️ Risk Builder")
-
     if "saved_portfolios" not in st.session_state:
         st.session_state["saved_portfolios"] = {}
 
-    tickers = [t.strip().upper() for t in st.text_input("Enter ticker symbols", "AAPL, MSFT, GOOGL", key="rb_t").split(",")]
-    start = st.date_input("Start Date", pd.to_datetime("2022-01-01"), key="rb_s")
-    end = st.date_input("End Date", pd.to_datetime("2024-12-31"), key="rb_e")
-    alpha = st.slider("CVaR/VaR Confidence Level", 0.90, 0.99, 0.95, key="rb_alpha")
+    if not tickers:
+        st.warning("Please enter at least one ticker in the sidebar.")
+        st.stop()
 
+    alpha = st.slider("CVaR/VaR Confidence Level", 0.90, 0.99, 0.95)
     prices = get_price_data(tickers, start, end)
     if prices.empty:
         st.warning("No price data returned for selected tickers.")
@@ -219,7 +245,6 @@ with tabs[3]:
     returns = compute_returns(prices)
     daily = returns.dot(weights)
     cumulative = (1 + daily).cumprod()
-
     st.subheader("📈 Cumulative Performance")
     st.line_chart(cumulative.rename("Portfolio"))
 
@@ -274,13 +299,12 @@ with tabs[3]:
         st.subheader("📎 Compare Saved Portfolios")
         selected = st.multiselect("Choose portfolios to compare", list(st.session_state.saved_portfolios.keys()))
         if selected:
-            metrics = list(st.session_state.saved_portfolios[selected[0]]["metrics"].keys())
+            metrics = list(st.session_state.saved_portfolios[selected[0]]['metrics'].keys())
             angles = np.linspace(0, 2 * np.pi, len(metrics), endpoint=False).tolist()
             angles += angles[:1]
-
             fig, ax = plt.subplots(figsize=(6, 6), subplot_kw=dict(polar=True))
             for name in selected:
-                values = list(st.session_state.saved_portfolios[name]["metrics"].values())
+                values = list(st.session_state.saved_portfolios[name]['metrics'].values())
                 norm = (np.array(values) - np.min(values)) / (np.max(values) - np.min(values) + 1e-8)
                 norm = norm.tolist() + norm[:1]
                 ax.plot(angles, norm, label=name)
@@ -293,7 +317,7 @@ with tabs[3]:
     st.subheader("⬇️ Export Portfolio Metrics")
     if name in st.session_state.saved_portfolios:
         df = pd.DataFrame.from_dict(
-            st.session_state.saved_portfolios[name]["metrics"],
+            st.session_state.saved_portfolios[name]['metrics'],
             orient="index", columns=["Value"]
         )
         st.dataframe(df.style.format("{:.4f}"))
