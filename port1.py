@@ -1,13 +1,14 @@
-# portfolio_app.py (final stable version)
+# portfolio_app.py (final version with Sector Allocation and all fixes)
 import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
+import plotly.express as px
 
 st.set_page_config(layout="wide")
-st.title("📊 Portfolio Analysis App")
+st.title("📊 Portfolio Analysis")
 
 # ============================ UTILS ============================
 def get_price_data(tickers, start, end):
@@ -44,14 +45,69 @@ tabs = st.tabs(["Asset Analysis", "Portfolio Comparison", "Mean Risk", "Risk Bui
 # -------------------- 1. Asset Analysis --------------------
 with tabs[0]:
     st.header("📈 Asset Analysis")
+
+    # st.subheader("📍 Benchmark Comparison")
+
+    # benchmark_options = {
+    #     "^GSPC": "S&P 500",
+    #     "^DJI": "Dow Jones",
+    #     "^IXIC": "NASDAQ",
+    #     "^RUT": "Russell 2000",
+    #     "^FTSE": "FTSE 100",
+    #     "^N225": "Nikkei 225"
+    # }
+
+    # selected_benchmark = st.selectbox("Choose a Benchmark", options=list(benchmark_options.keys()), format_func=lambda x: benchmark_options[x])
+
+
     tickers = [t.strip().upper() for t in st.text_input("Enter ticker symbols", "AAPL, MSFT, GOOGL").split(",")]
     start = st.date_input("Start Date", pd.to_datetime("2022-01-01"))
     end = st.date_input("End Date", pd.to_datetime("2024-12-31"))
     prices = get_price_data(tickers, start, end)
 
     if not prices.empty:
+
+        st.subheader("ℹ️ Asset Information")
+
+        asset_info = []
+
+        for ticker in tickers:
+            try:
+                info = yf.Ticker(ticker).info
+                asset_info.append({
+                    "Ticker": ticker,
+                    "Sector": info.get("sector", "N/A"),
+                    "Industry": info.get("industry", "N/A"),
+                    "Market Cap": f"${info.get('marketCap', 0) / 1e9:.2f} B" if info.get('marketCap') else "N/A",
+                    "Country": info.get("country", "N/A")
+                })
+            except:
+                asset_info.append({
+                    "Ticker": ticker,
+                    "Sector": "N/A",
+                    "Industry": "N/A",
+                    "Market Cap": "N/A",
+                    "Country": "N/A"
+                })
+
+        df_info = pd.DataFrame(asset_info)
+        df_info.set_index("Ticker", inplace=True)
+        st.dataframe(df_info)
+
+
         st.subheader("Price Chart")
         st.line_chart(prices)
+
+
+        # benchmark_data = yf.download(selected_benchmark, start=start, end=end, progress=False)["Close"]
+        # benchmark_data.name = selected_benchmark
+
+        # combined_prices = prices.copy()
+        # combined_prices[selected_benchmark] = benchmark_data
+
+        # st.subheader("Price Chart (with Benchmark)")
+        # st.line_chart(combined_prices)
+
 
         returns = compute_returns(prices)
         st.subheader("Returns")
@@ -63,16 +119,67 @@ with tabs[0]:
             "Volatility": returns.std(),
             "Sharpe Ratio": returns.mean() / returns.std()
         })
-        st.dataframe(stats.style.format("{:.4f}"))
+        # st.dataframe(stats.style.format("{:.4f}"))
 
-        st.subheader("Correlation Heatmap")
-        # fig, ax = plt.subplots()
-        # sns.heatmap(returns.corr(), annot=True, cmap="coolwarm", ax=ax)
-        # st.pyplot(fig)
+        # Reset the index and prepare the data
+        stats.index.name = 'Ticker'  # Set the index name before reset
+        stats_reset = stats.reset_index()
 
-        fig, ax = plt.subplots(figsize=(6, 4))  # smaller width and height
-        sns.heatmap(returns.corr(), annot=True, cmap="coolwarm", ax=ax)
-        st.pyplot(fig)
+        # Melt the DataFrame into long format for plotting
+        stats_melt = stats_reset.melt(id_vars="Ticker", var_name="Metric", value_name="Value")
+
+        # Plotly bar chart
+        fig = px.bar(
+            stats_melt,
+            x="Ticker",
+            y="Value",
+            color="Metric",
+            barmode="group",
+            title="Mean Return, Volatility, and Sharpe Ratio by Asset"
+        )
+        fig.update_layout(xaxis_title="Ticker", yaxis_title="Value", legend_title="Metric")
+
+        st.plotly_chart(fig, use_container_width=True)
+
+        # # Optional raw table toggle
+        # if st.toggle("📋 Show raw statistics table"):
+        #     st.dataframe(stats.style.format("{:.4f}"))
+
+        
+
+        st.subheader("🏢 Sector Allocation (Equal Weighted)")
+
+        equal_weights = [1 / len(tickers)] * len(tickers)
+        sectors = {}
+
+        for i, ticker in enumerate(tickers):
+            try:
+                sector = yf.Ticker(ticker).info.get("sector", "Unknown")
+                sectors[sector] = sectors.get(sector, 0) + equal_weights[i]
+            except:
+                sectors["Unknown"] = sectors.get("Unknown", 0) + equal_weights[i]
+
+        # Normalize
+        total = sum(sectors.values())
+        sector_weights = {k: v / total for k, v in sectors.items()}
+        sector_df = pd.DataFrame(list(sector_weights.items()), columns=["Sector", "Weight"])
+
+        fig = px.pie(sector_df, values="Weight", names="Sector", title="Sector Allocation", hole=0.3)
+        st.plotly_chart(fig, use_container_width=True)
+
+
+        st.subheader("📊 Asset Correlation")
+        corr_matrix = returns.corr().round(2)
+
+        fig = px.imshow(
+            corr_matrix,
+            text_auto=True,
+            color_continuous_scale="RdBu",
+            title="Correlation Matrix of Returns"
+        )
+        fig.update_layout(height=400)
+        st.plotly_chart(fig, use_container_width=True)
+
     else:
         st.warning("No data available for selection.")
 
@@ -99,11 +206,12 @@ with tabs[1]:
             st.line_chart(all_cum)
 
             st.subheader("Final Cumulative Returns")
-            st.bar_chart(all_cum.iloc[-1])
+            final_returns = all_cum.iloc[-1].to_frame(name="Final Return")
+            st.bar_chart(final_returns)
 
             st.subheader("Stats")
             mean, vol, sharpe = portfolio_stats(returns)
-            st.write(f"Return: {mean:.4f}, Volatility: {vol:.4f}, Sharpe Ratio: {sharpe:.4f}")
+            st.write(f"Return: {mean:.4f}, \nVolatility: {vol:.4f}, \nSharpe Ratio: {sharpe:.4f}")
         else:
             st.warning("No data returned for these tickers.")
 
@@ -184,7 +292,6 @@ with tabs[2]:
     })
 
 # -------------------- 4. Risk Builder --------------------
-# (To be appended or reused from previous version as needed)
 with tabs[3]:
     st.header("🏗️ Risk Builder")
 
@@ -215,6 +322,22 @@ with tabs[3]:
     if not np.isclose(sum(weights), 1.0):
         st.warning("Weights must sum to 1. Adjust them accordingly.")
         st.stop()
+
+    st.subheader("🏢 Sector Allocation")
+    sectors = {}
+    for i, ticker in enumerate(tickers):
+        try:
+            sector = yf.Ticker(ticker).info.get("sector", "Unknown")
+            sectors[sector] = sectors.get(sector, 0) + weights[i]
+        except:
+            sectors["Unknown"] = sectors.get("Unknown", 0) + weights[i]
+
+    total_weight = sum(sectors.values())
+    sector_weights = {k: v / total_weight for k, v in sectors.items()}
+    fig, ax = plt.subplots(figsize=(6, 6))
+    ax.pie(sector_weights.values(), labels=sector_weights.keys(), autopct='%1.1f%%', startangle=90)
+    ax.axis('equal')
+    st.pyplot(fig)
 
     returns = compute_returns(prices)
     daily = returns.dot(weights)
@@ -274,13 +397,13 @@ with tabs[3]:
         st.subheader("📎 Compare Saved Portfolios")
         selected = st.multiselect("Choose portfolios to compare", list(st.session_state.saved_portfolios.keys()))
         if selected:
-            metrics = list(st.session_state.saved_portfolios[selected[0]]["metrics"].keys())
+            metrics = list(st.session_state.saved_portfolios[selected[0]]['metrics'].keys())
             angles = np.linspace(0, 2 * np.pi, len(metrics), endpoint=False).tolist()
             angles += angles[:1]
 
             fig, ax = plt.subplots(figsize=(6, 6), subplot_kw=dict(polar=True))
             for name in selected:
-                values = list(st.session_state.saved_portfolios[name]["metrics"].values())
+                values = list(st.session_state.saved_portfolios[name]['metrics'].values())
                 norm = (np.array(values) - np.min(values)) / (np.max(values) - np.min(values) + 1e-8)
                 norm = norm.tolist() + norm[:1]
                 ax.plot(angles, norm, label=name)
@@ -293,7 +416,7 @@ with tabs[3]:
     st.subheader("⬇️ Export Portfolio Metrics")
     if name in st.session_state.saved_portfolios:
         df = pd.DataFrame.from_dict(
-            st.session_state.saved_portfolios[name]["metrics"],
+            st.session_state.saved_portfolios[name]['metrics'],
             orient="index", columns=["Value"]
         )
         st.dataframe(df.style.format("{:.4f}"))
