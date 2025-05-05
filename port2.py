@@ -3,14 +3,10 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
 import plotly.express as px
-import seaborn as sns
 from scipy.optimize import minimize
 from scipy.cluster.hierarchy import linkage, dendrogram
 from scipy.spatial.distance import squareform
-from sklearn.decomposition import PCA
-import io
 import json
 
 st.set_page_config(layout="wide")
