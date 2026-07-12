@@ -1121,7 +1121,7 @@ with tabs[1]:
                 
                 if selected_model in portfolio_returns:
                     # Resample to monthly returns
-                    monthly_returns = portfolio_returns[selected_model].resample('M').apply(
+                    monthly_returns = portfolio_returns[selected_model].resample('ME').apply(
                         lambda x: (1 + x).prod() - 1
                     )
                     
@@ -1430,7 +1430,7 @@ with tabs[1]:
                     weights_over_time = portfolio_weights_over_time[weight_model]
                     
                     # Resample to monthly for cleaner visualization
-                    weights_monthly = weights_over_time.resample('M').last()
+                    weights_monthly = weights_over_time.resample('ME').last()
                     
                     # Plot
                     fig = px.area(
@@ -2505,7 +2505,7 @@ with tabs[3]:
         # Tab 1: Return Distribution
         with risk_tabs[0]:
             # Monthly returns for better visualization
-            monthly_returns = portfolio_returns.resample('M').apply(
+            monthly_returns = portfolio_returns.resample('ME').apply(
                 lambda x: (1 + x).prod() - 1
             )
             

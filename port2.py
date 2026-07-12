@@ -261,7 +261,7 @@ def create_portfolio_metrics_table(returns_series, include_drawdown=True):
     var_95 = returns_series.quantile(0.05)
     
     # Calculate monthly statistics
-    monthly_returns = returns_series.resample('M').apply(lambda x: (1 + x).prod() - 1)
+    monthly_returns = returns_series.resample('ME').apply(lambda x: (1 + x).prod() - 1)
     positive_months = (monthly_returns > 0).mean()
     
     metrics = {
@@ -1643,7 +1643,7 @@ with tabs[3]:
         # Tab 1: Return Distribution
         with risk_tabs[0]:
             # Monthly returns for better visualization
-            monthly_returns = portfolio_returns.resample('M').apply(
+            monthly_returns = portfolio_returns.resample('ME').apply(
                 lambda x: (1 + x).prod() - 1
             )
             
