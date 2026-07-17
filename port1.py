@@ -789,21 +789,12 @@ with tabs[1]:
                 use_container_width=True
             )
         
-        # ---------------- Train-Test Split ----------------
-        st.subheader("📆 Backtest Settings")
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            split_slider = st.slider(
-                "Train-Test Split (%)",
-                min_value=50,
-                max_value=95,
-                value=80,
-                step=5,
-                help="Percentage of data to use for training (rest will be for testing)"
-            )
-        
-        with col2:
+        # ---------------- Portfolio Performance ----------------
+        st.subheader("📈 Portfolio Performance")
+
+        perf_col1, perf_col2 = st.columns(2)
+
+        with perf_col1:
             transaction_cost = st.number_input(
                 "Transaction Cost (%)",
                 min_value=0.0,
@@ -812,24 +803,16 @@ with tabs[1]:
                 step=0.05,
                 help="Cost of trading as a percentage of transaction value"
             ) / 100
-        
-        # Calculate split point
-        split_index = int(len(returns) * (split_slider / 100))
-        train_returns = returns.iloc[:split_index]
-        test_returns = returns.iloc[split_index:]
-        split_date = returns.index[split_index]
-        
-        st.caption(f"Training period: {returns.index[0].date()} to {split_date.date()} ({len(train_returns)} days) | Testing period: {split_date.date()} to {returns.index[-1].date()} ({len(test_returns)} days)")
-        
-        # ---------------- Portfolio Performance Calculation ----------------
-        initial_amount = st.number_input(
-            "💰 Initial Investment ($)",
-            min_value=1000,
-            value=10000,
-            step=1000,
-            help="Starting amount for portfolio backtest"
-        )
-        
+
+        with perf_col2:
+            initial_amount = st.number_input(
+                "💰 Initial Investment ($)",
+                min_value=1000,
+                value=10000,
+                step=1000,
+                help="Starting amount for portfolio backtest"
+            )
+
         # Determine rebalancing frequency
         def get_rebalance_dates(returns_index, frequency):
             if frequency == "None":
@@ -976,35 +959,37 @@ with tabs[1]:
             # Create DataFrames
             values_df = pd.DataFrame(portfolio_values)
             returns_df = pd.DataFrame(portfolio_returns)
-            
-            # Add train/test split annotation
-            train_mask = values_df.index < split_date
-            test_mask = values_df.index >= split_date
-            
-            # Calculate train and test only DataFrames
-            train_values = values_df[train_mask]
-            test_values = values_df[test_mask]
-            
-            # Normalize test values to start at same point
-            test_normalized = pd.DataFrame()
-            for col in test_values.columns:
-                if len(train_values) > 0:
-                    # Get the last value from train period
-                    last_train_value = train_values[col].iloc[-1]
-                    # Normalize test values to start at the last train value
-                    first_test_value = test_values[col].iloc[0]
-                    test_normalized[col] = test_values[col] * (last_train_value / first_test_value)
-                else:
-                    test_normalized[col] = test_values[col]
-            
-            # 1. Full period performance chart
-            st.subheader("📈 Portfolio Performance")
-            
+
+            # 1. Growth of investment chart, with its own selectable start date
+            growth_start_date = st.date_input(
+                "Growth Chart Start Date",
+                value=returns.index[0].date(),
+                min_value=returns.index[0].date(),
+                max_value=returns.index[-1].date(),
+                help="Simulate a fresh investment starting from this date instead of the full period"
+            )
+
+            growth_returns = returns.loc[pd.Timestamp(growth_start_date):]
+            growth_rebalance_dates = get_rebalance_dates(growth_returns.index, rebalance_frequency)
+
+            growth_values = {}
+            for model_name in selected_models:
+                if model_name in weight_dict:
+                    g_values, _, _ = calculate_portfolio_performance(
+                        weight_dict[model_name],
+                        growth_returns,
+                        growth_rebalance_dates,
+                        transaction_cost
+                    )
+                    growth_values[model_name] = g_values
+
+            growth_values_df = pd.DataFrame(growth_values)
+
             # Create figure with data
             fig = px.line(
-                values_df,
+                growth_values_df,
                 labels={"value": "Portfolio Value ($)", "index": "Date", "variable": "Model"},
-                title=f"Growth of ${initial_amount:,} Investment"
+                title=f"Growth of ${initial_amount:,} Investment (from {growth_start_date})"
             )
 
             fig.update_layout(
@@ -1033,10 +1018,8 @@ with tabs[1]:
             
             # 2. Create additional visualization tabs
             viz_tabs = st.tabs([
-                "Return Analysis", 
-                "Train Period Only", 
-                "Test Period Only", 
-                "Weight Evolution", 
+                "Return Analysis",
+                "Weight Evolution",
                 "Drawdown Analysis"
             ])
             
@@ -1145,46 +1128,68 @@ with tabs[1]:
                 # Rolling performance metrics - already full width
                 st.subheader("📈 Rolling Performance")
                 metric_type = st.selectbox(
-                    "Performance metric", 
+                    "Performance metric",
                     ["Rolling Sharpe Ratio", "Rolling Volatility", "Rolling Return"],
                     index=0,
                     key="rolling_performance_metric"
                 )
-                
-                window = st.slider(
-                    "Rolling window (months)", 
-                    min_value=3, 
-                    max_value=36, 
-                    value=12, 
-                    step=3,
-                    key="rolling_window_slider"
+
+                # Sharpe needs enough samples per window to be meaningful, so weekly is excluded
+                if metric_type == "Rolling Sharpe Ratio":
+                    unit_options = ["Monthly", "Quarterly"]
+                else:
+                    unit_options = ["Weekly", "Monthly", "Quarterly"]
+
+                window_unit = st.selectbox(
+                    "Rolling window unit",
+                    unit_options,
+                    index=0,
+                    key="rolling_window_unit"
                 )
-                
+
+                unit_config = {
+                    "Weekly": {"days_per_unit": 5, "min": 2, "max": 26, "default": 4, "step": 1, "label": "Week"},
+                    "Monthly": {"days_per_unit": 21, "min": 3, "max": 36, "default": 12, "step": 3, "label": "Month"},
+                    "Quarterly": {"days_per_unit": 63, "min": 1, "max": 8, "default": 4, "step": 1, "label": "Quarter"},
+                }[window_unit]
+
+                window = st.slider(
+                    f"Rolling window ({window_unit.lower()})",
+                    min_value=unit_config["min"],
+                    max_value=unit_config["max"],
+                    value=unit_config["default"],
+                    step=unit_config["step"],
+                    key=f"rolling_window_slider_{window_unit}"
+                )
+
+                window_days = window * unit_config["days_per_unit"]
+                window_label = f"{window}-{unit_config['label']}"
+
                 # Calculate rolling metrics
                 rolling_data = {}
                 for model in selected_models:
                     if model in portfolio_returns:
                         rets = portfolio_returns[model]
-                        
+
                         if metric_type == "Rolling Sharpe Ratio":
-                            rolling = rets.rolling(window=window*21).apply(
+                            rolling = rets.rolling(window=window_days).apply(
                                 lambda x: np.sqrt(252) * x.mean() / x.std() if x.std() != 0 else 0
                             )
-                            title = f"{window}-Month Rolling Sharpe Ratio"
+                            title = f"{window_label} Rolling Sharpe Ratio"
                             y_title = "Sharpe Ratio"
-                        
+
                         elif metric_type == "Rolling Volatility":
-                            rolling = rets.rolling(window=window*21).std() * np.sqrt(252) * 100
-                            title = f"{window}-Month Rolling Volatility"
+                            rolling = rets.rolling(window=window_days).std() * np.sqrt(252) * 100
+                            title = f"{window_label} Rolling Volatility"
                             y_title = "Annualized Volatility (%)"
-                        
+
                         else:  # Rolling Return
-                            rolling = rets.rolling(window=window*21).apply(
+                            rolling = rets.rolling(window=window_days).apply(
                                 lambda x: (1 + x).prod() - 1
                             ) * 100
-                            title = f"{window}-Month Rolling Return"
+                            title = f"{window_label} Rolling Return"
                             y_title = "Return (%)"
-                        
+
                         rolling_data[model] = rolling
                 
                 # Create DataFrame
@@ -1197,19 +1202,7 @@ with tabs[1]:
                     title=title
                 )
                 
-                # Add split line
-                fig.add_shape(
-                    type="line",
-                    x0=split_date,
-                    y0=0,
-                    x1=split_date,
-                    y1=1,
-                    yref="paper",
-                    line=dict(color="magenta", width=2, dash="dash"),
-                )
-                
                 # Update layout
-                # fig.update_layout(height=500, legend=dict(orientation="h", y=1.1))
                 fig.update_layout(
                     height=500,
                     # Improve the legend positioning and appearance
@@ -1230,129 +1223,8 @@ with tabs[1]:
                 )
                 st.plotly_chart(fig, use_container_width=True)
             
-            # For the Train Period Tab:
+            # Tab 2: Weight Evolution
             with viz_tabs[1]:
-                st.subheader("📘 Train Period Performance")
-                
-                # Create masks specifically for values data
-                train_mask = values_df.index < split_date
-                train_values = values_df[train_mask]
-
-
-                # Percentage gain for train period
-                train_gain = pd.DataFrame()
-                for col in train_values.columns:
-                    train_gain[col] = (train_values[col] / train_values[col].iloc[0] - 1) * 100
-                
-                # Plot
-                fig = px.line(
-                    train_gain,
-                    labels={"value": "Return (%)", "index": "Date", "variable": "Model"},
-                    title=f"Train Period: {train_values.index[0].date()} to {train_values.index[-1].date()}"
-                )
-                
-                # Update layout
-                fig.update_layout(height=500, yaxis_tickformat='.1f')
-                st.plotly_chart(fig, use_container_width=True)
-                
-                # Train period statistics
-                train_stats = {}
-                for model in selected_models:
-                    if model in portfolio_returns:
-                        # Create mask specific to this model's returns
-                        returns_train_mask = portfolio_returns[model].index < split_date
-                        model_rets = portfolio_returns[model][returns_train_mask]
-                        
-                        # The rest of the code remains the same
-                        total_return = (train_values[model].iloc[-1] / train_values[model].iloc[0] - 1) * 100
-                        
-                        # Calculate annualized metrics
-                        years = (train_values.index[-1] - train_values.index[0]).days / 365.25
-                        annualized_return = ((1 + total_return/100) ** (1/years) - 1) * 100
-                        annualized_vol = model_rets.std() * np.sqrt(252) * 100
-                        sharpe = annualized_return / annualized_vol if annualized_vol > 0 else 0
-                        
-                        # Calculate drawdown
-                        roll_max = train_values[model].cummax()
-                        drawdown = (train_values[model] / roll_max - 1) * 100
-                        max_drawdown = drawdown.min()
-                        
-                        train_stats[model] = {
-                            "Total Return (%)": f"{total_return:.2f}",
-                            "Annualized Return (%)": f"{annualized_return:.2f}",
-                            "Annualized Volatility (%)": f"{annualized_vol:.2f}",
-                            "Sharpe Ratio": f"{sharpe:.2f}",
-                            "Maximum Drawdown (%)": f"{max_drawdown:.2f}"
-                        }
-                
-                # Create DataFrame
-                train_stats_df = pd.DataFrame(train_stats).T
-                
-                # Display
-                st.dataframe(train_stats_df, use_container_width=True)
-
-            # Similarly for the Test Period Tab:
-            with viz_tabs[2]:
-                st.subheader("📙 Test Period Performance")
-                
-                # Create masks specifically for values data
-                test_mask = values_df.index >= split_date
-                test_values = values_df[test_mask]
-                
-                # Percentage gain for test period
-                test_gain = pd.DataFrame()
-                for col in test_values.columns:
-                    test_gain[col] = (test_values[col] / test_values[col].iloc[0] - 1) * 100
-                
-                # Plot
-                fig = px.line(
-                    test_gain,
-                    labels={"value": "Return (%)", "index": "Date", "variable": "Model"},
-                    title=f"Test Period: {test_values.index[0].date()} to {test_values.index[-1].date()}"
-                )
-                
-                # Update layout
-                fig.update_layout(height=500, yaxis_tickformat='.1f')
-                st.plotly_chart(fig, use_container_width=True)
-                
-                # Test period statistics
-                test_stats = {}
-                for model in selected_models:
-                    if model in portfolio_returns:
-                        # Create mask specific to this model's returns
-                        returns_test_mask = portfolio_returns[model].index >= split_date
-                        model_rets = portfolio_returns[model][returns_test_mask]
-                        
-                        # Remaining calculations are the same
-                        total_return = (test_values[model].iloc[-1] / test_values[model].iloc[0] - 1) * 100
-                        
-                        # Calculate annualized metrics
-                        years = (test_values.index[-1] - test_values.index[0]).days / 365.25
-                        annualized_return = ((1 + total_return/100) ** (1/years) - 1) * 100
-                        annualized_vol = model_rets.std() * np.sqrt(252) * 100
-                        sharpe = annualized_return / annualized_vol if annualized_vol > 0 else 0
-                        
-                        # Calculate drawdown
-                        roll_max = test_values[model].cummax()
-                        drawdown = (test_values[model] / roll_max - 1) * 100
-                        max_drawdown = drawdown.min()
-                        
-                        test_stats[model] = {
-                            "Total Return (%)": f"{total_return:.2f}",
-                            "Annualized Return (%)": f"{annualized_return:.2f}",
-                            "Annualized Volatility (%)": f"{annualized_vol:.2f}",
-                            "Sharpe Ratio": f"{sharpe:.2f}",
-                            "Maximum Drawdown (%)": f"{max_drawdown:.2f}"
-                        }
-                
-                # Create DataFrame
-                test_stats_df = pd.DataFrame(test_stats).T
-                
-                # Display
-                st.dataframe(test_stats_df, use_container_width=True)
-            
-            # Tab 4: Weight Evolution
-            with viz_tabs[3]:
                 st.subheader("⚖️ Portfolio Weight Evolution")
                 
                 # Select a model for weight analysis
@@ -1372,13 +1244,6 @@ with tabs[1]:
                         weights_monthly,
                         labels={"value": "Weight", "index": "Date", "variable": "Asset"},
                         title=f"Weight Evolution: {weight_model}"
-                    )
-                    
-                    # Add split line
-                    fig.add_vline(
-                        x=split_date, 
-                        line_dash="dash", 
-                        line_color="magenta"
                     )
                     
                     # Update layout
@@ -1432,8 +1297,8 @@ with tabs[1]:
                     fig.update_layout(height=500)
                     st.plotly_chart(fig, use_container_width=True)
 
-            # Tab 5: Drawdown Analysis
-            with viz_tabs[4]:
+            # Tab 3: Drawdown Analysis
+            with viz_tabs[2]:
                 st.subheader("📉 Drawdown Analysis")
                 
                 # Calculate drawdowns for each model
@@ -1458,8 +1323,7 @@ with tabs[1]:
                 # Update layout
                 fig.update_layout(
                     height=500,
-                    yaxis_tickformat='.1f',
-                    yaxis_autorange="reversed"  # Invert y-axis for better visualization
+                    yaxis_tickformat='.1f'
                 )
                 st.plotly_chart(fig, use_container_width=True)
 
@@ -1802,9 +1666,9 @@ with tabs[2]:
                 st.metric("Conditional VaR", f"{cvar:.2%}")
                 st.metric("Downside Deviation", f"{downside:.2%}")
                 
-            # Add an expander for the detailed asset weights
-            with st.expander("Detailed Asset Weights"):
-                st.dataframe(weights_df.style.format({'Weight': '{:.2%}'}))
+            # Detailed asset weights
+            st.write("#### Detailed Asset Weights")
+            st.dataframe(weights_df.style.format({'Weight': '{:.2%}'}), hide_index=True)
 
         # Min Volatility Portfolio
         with portfolio_tabs[1]:
@@ -1864,9 +1728,9 @@ with tabs[2]:
                 st.metric("Conditional VaR", f"{min_vol_cvar:.2%}")
                 st.metric("Downside Deviation", f"{min_vol_downside:.2%}")
                 
-            # Add an expander for the detailed asset weights
-            with st.expander("Detailed Asset Weights"):
-                st.dataframe(min_vol_weights_df.style.format({'Weight': '{:.2%}'}))
+            # Detailed asset weights
+            st.write("#### Detailed Asset Weights")
+            st.dataframe(min_vol_weights_df.style.format({'Weight': '{:.2%}'}), hide_index=True)
                 
             # Add historical performance visualization
             st.subheader("Historical Performance")
@@ -1998,9 +1862,9 @@ with tabs[2]:
                 st.metric("Conditional VaR", f"{max_ret_cvar:.2%}")
                 st.metric("Downside Deviation", f"{max_ret_downside:.2%}")
                 
-            # Add an expander for the detailed asset weights
-            with st.expander("Detailed Asset Weights"):
-                st.dataframe(max_ret_weights_df.style.format({'Weight': '{:.2%}'}))
+            # Detailed asset weights
+            st.write("#### Detailed Asset Weights")
+            st.dataframe(max_ret_weights_df.style.format({'Weight': '{:.2%}'}), hide_index=True)
                 
             # Add historical performance visualization
             st.subheader("Historical Performance")
