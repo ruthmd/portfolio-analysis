@@ -1169,7 +1169,7 @@ with tabs[1]:
                 freq_map = {
                     "Daily": "B",
                     "Weekly": "W",
-                    "Monthly": "M"
+                    "Monthly": "ME"
                 }
                 
                 # Resample returns to selected frequency
