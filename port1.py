@@ -142,7 +142,7 @@ with tabs[0]:
         st.subheader("📊 Correlation Heatmap")
         corr_matrix = returns.corr().round(2)
         fig = px.imshow(corr_matrix, text_auto=True, color_continuous_scale="RdBu", title="Correlation Matrix of Returns")
-        fig.update_layout(height=400)
+        fig.update_layout(height=700)
         st.plotly_chart(fig, use_container_width=True)
 
         st.subheader("🏢 Sector Allocation")
@@ -158,6 +158,7 @@ with tabs[0]:
         sector_weights = {k: v / total for k, v in sectors.items()}
         sector_df = pd.DataFrame(list(sector_weights.items()), columns=["Sector", "Weight"])
         fig = px.pie(sector_df, values="Weight", names="Sector", title="Sector Allocation", hole=0.3)
+        fig.update_layout(height=700)
         st.plotly_chart(fig, use_container_width=True)
 
         
@@ -999,78 +1000,11 @@ with tabs[1]:
             # 1. Full period performance chart
             st.subheader("📈 Portfolio Performance")
             
-            # Instead of using add_vline and add_vrect with timestamps, use shapes:
-
             # Create figure with data
             fig = px.line(
                 values_df,
                 labels={"value": "Portfolio Value ($)", "index": "Date", "variable": "Model"},
                 title=f"Growth of ${initial_amount:,} Investment"
-            )
-
-            # Add vertical line for train/test split using shapes
-            fig.add_shape(
-                type="line",
-                x0=split_date,
-                y0=0,
-                x1=split_date,
-                y1=1,
-                yref="paper",
-                line=dict(color="magenta", width=2, dash="dash"),
-            )
-
-            # Add annotation for the split line
-            fig.add_annotation(
-                x=split_date,
-                y=1,
-                yref="paper",
-                text="Train/Test Split",
-                showarrow=False,
-                font=dict(color="magenta"),
-                bgcolor="rgba(255,255,255,0.7)",
-                borderpad=4
-            )
-
-            # Add rectangles for train and test regions using shapes
-            fig.add_shape(
-                type="rect",
-                x0=values_df.index[0],
-                y0=0,
-                x1=split_date,
-                y1=1,
-                yref="paper",
-                # fillcolor="rgba(0,100,255,0.1)",
-                line_width=0,
-            )
-
-            fig.add_shape(
-                type="rect",
-                x0=split_date,
-                y0=0,
-                x1=values_df.index[-1],
-                y1=1,
-                yref="paper",
-                # fillcolor="rgba(255,100,0,0.1)",
-                line_width=0,
-            )
-
-            # Add annotations for regions
-            fig.add_annotation(
-                x=values_df.index[int(len(values_df.index) * 0.25)],  # 25% into train set
-                y=0.95,
-                yref="paper",
-                text="Train Set",
-                showarrow=False,
-                font=dict(color="lightgreen"),
-            )
-
-            fig.add_annotation(
-                x=values_df.index[int(len(values_df.index) * 0.75)],  # 25% into test set
-                y=0.95,
-                yref="paper",
-                text="Test Set",
-                showarrow=False,
-                font=dict(color="orange"),
             )
 
             fig.update_layout(
@@ -1160,16 +1094,17 @@ with tabs[1]:
                 
                 # Controls for return distribution
                 dist_freq = st.selectbox(
-                    "Return frequency", 
-                    ["Daily", "Weekly", "Monthly"],
+                    "Return frequency",
+                    ["Daily", "Weekly", "Monthly", "Quarterly"],
                     index=0,
                     key="return_frequency_selector"
                 )
-                
+
                 freq_map = {
                     "Daily": "B",
                     "Weekly": "W",
-                    "Monthly": "ME"
+                    "Monthly": "ME",
+                    "Quarterly": "QE"
                 }
                 
                 # Resample returns to selected frequency
@@ -1198,8 +1133,8 @@ with tabs[1]:
                 
                 # Update layout
                 fig.update_layout(
-                    height=400, 
-                    xaxis_title=f"{dist_freq} Return", 
+                    height=700,
+                    xaxis_title=f"{dist_freq} Return",
                     yaxis_title="Frequency"
                 )
                 fig.update_xaxes(tickformat='.0%')
@@ -1520,21 +1455,14 @@ with tabs[1]:
                     title="Portfolio Drawdowns"
                 )
                 
-                # Add split line
-                fig.add_vline(
-                    x=split_date, 
-                    line_dash="dash", 
-                    line_color="magenta"
-                )
-                
                 # Update layout
                 fig.update_layout(
-                    height=500, 
-                    yaxis_tickformat='.1f', 
+                    height=500,
+                    yaxis_tickformat='.1f',
                     yaxis_autorange="reversed"  # Invert y-axis for better visualization
                 )
                 st.plotly_chart(fig, use_container_width=True)
-                
+
                 # Top 5 drawdown periods for selected model
                 dd_model = st.selectbox(
                     "Select model for detailed drawdown analysis", 
@@ -1772,26 +1700,26 @@ with tabs[2]:
         
         # Create the scatter plot with Plotly
         fig = px.scatter(
-            df, 
-            x="Volatility", 
-            y="Return", 
+            df,
+            x="Volatility",
+            y="Return",
             color="Sharpe",
             color_continuous_scale="viridis",
-            hover_data=["Sharpe", "CVaR"],
+            hover_data={"Volatility": ":.5g", "Return": ":.5g", "Sharpe": ":.5g", "CVaR": ":.5g"},
             title="Portfolio Efficient Frontier",
             labels={"Volatility": "Volatility (σ)", "Return": "Expected Return (μ)"}
         )
-        
+
         # Add the special portfolios
         for i, row in special_portfolios.iterrows():
             fig.add_scatter(
-                x=[row['Volatility']], 
-                y=[row['Return']], 
+                x=[row['Volatility']],
+                y=[row['Return']],
                 mode='markers',
                 marker=dict(color=row['color'], size=row['size']),
                 name=row['Portfolio'],
                 hoverinfo='text',
-                hovertext=f"{row['Portfolio']}<br>Return: {row['Return']:.4f}<br>Volatility: {row['Volatility']:.4f}<br>Sharpe: {row['Sharpe']:.4f}"
+                hovertext=f"{row['Portfolio']}<br>Return: {row['Return']:.5g}<br>Volatility: {row['Volatility']:.5g}<br>Sharpe: {row['Sharpe']:.5g}"
             )
         
         # Update layout for better appearance
