@@ -35,6 +35,39 @@ def get_price_data(tickers, start, end):
 def get_benchmark_prices(start, end):
     return yf.download("^GSPC", start=start, end=end, progress=False)["Close"]
 
+def compute_portfolio_metrics(weights, asset_returns, alpha, start, end):
+    """Core risk/return metrics for a weight vector: annualized return/vol, Sharpe,
+    Sortino, VaR, CVaR, downside deviation, and beta vs. the S&P 500."""
+    weights_array = np.array(list(weights.values())) if isinstance(weights, dict) else np.asarray(weights)
+    port_returns = asset_returns.dot(weights_array)
+
+    downside = np.std(port_returns[port_returns < 0])
+    var = np.percentile(-port_returns, (1 - alpha) * 100)
+    cvar = -port_returns[port_returns <= -var].mean()
+
+    try:
+        spy = get_benchmark_prices(start, end).pct_change(fill_method=None).dropna().loc[port_returns.index]
+        beta = np.cov(port_returns, spy)[0, 1] / np.var(spy)
+    except Exception:
+        beta = np.nan
+
+    annualized_return = port_returns.mean() * 252
+    annualized_vol = port_returns.std() * np.sqrt(252)
+    sharpe = annualized_return / annualized_vol if annualized_vol > 0 else 0
+    sortino = annualized_return / (downside * np.sqrt(252)) if downside > 0 else 0
+
+    return {
+        "returns": port_returns,
+        "annualized_return": annualized_return,
+        "annualized_vol": annualized_vol,
+        "sharpe": sharpe,
+        "sortino": sortino,
+        "var": var,
+        "cvar": cvar,
+        "downside": downside,
+        "beta": beta,
+    }
+
 def compute_returns(price_data):
     return price_data.pct_change(fill_method=None).dropna()
 
@@ -1637,24 +1670,17 @@ with tabs[2]:
             st.plotly_chart(fig, use_container_width=True)
             
             # Calculate and display metrics
-            opt_returns = returns.dot(list(weights.values()))
-            downside = np.std(opt_returns[opt_returns < 0])
-            var = np.percentile(-opt_returns, (1 - alpha) * 100)
-            cvar = -opt_returns[opt_returns <= -var].mean()
-            
-            # Add more metrics
-            try:
-                spy = get_benchmark_prices(start, end).pct_change(fill_method=None).dropna().loc[opt_returns.index]
-                beta = np.cov(opt_returns, spy)[0, 1] / np.var(spy)
-            except:
-                beta = np.nan
-                
-            # Calculate additional metrics
-            annualized_return = best["Return"] * 252
-            annualized_vol = best["Volatility"] * np.sqrt(252)
-            sharpe = annualized_return / annualized_vol if annualized_vol > 0 else 0
-            sortino = annualized_return / (downside * np.sqrt(252)) if downside > 0 else 0
-            
+            metrics = compute_portfolio_metrics(weights, returns, alpha, start, end)
+            opt_returns = metrics["returns"]
+            downside = metrics["downside"]
+            var = metrics["var"]
+            cvar = metrics["cvar"]
+            beta = metrics["beta"]
+            annualized_return = metrics["annualized_return"]
+            annualized_vol = metrics["annualized_vol"]
+            sharpe = metrics["sharpe"]
+            sortino = metrics["sortino"]
+
             # Create metrics columns
             col1, col2 = st.columns(2)
             
@@ -1699,24 +1725,17 @@ with tabs[2]:
             st.plotly_chart(fig, use_container_width=True)
             
             # Calculate and display metrics
-            min_vol_returns = returns.dot(list(min_vol_weights.values()))
-            min_vol_downside = np.std(min_vol_returns[min_vol_returns < 0])
-            min_vol_var = np.percentile(-min_vol_returns, (1 - alpha) * 100)
-            min_vol_cvar = -min_vol_returns[min_vol_returns <= -min_vol_var].mean()
-            
-            # Add more metrics
-            try:
-                spy = get_benchmark_prices(start, end).pct_change(fill_method=None).dropna().loc[min_vol_returns.index]
-                min_vol_beta = np.cov(min_vol_returns, spy)[0, 1] / np.var(spy)
-            except:
-                min_vol_beta = np.nan
-                
-            # Calculate additional metrics
-            min_vol_annualized_return = min_vol["Return"] * 252
-            min_vol_annualized_vol = min_vol["Volatility"] * np.sqrt(252)
-            min_vol_sharpe = min_vol_annualized_return / min_vol_annualized_vol if min_vol_annualized_vol > 0 else 0
-            min_vol_sortino = min_vol_annualized_return / (min_vol_downside * np.sqrt(252)) if min_vol_downside > 0 else 0
-            
+            min_vol_metrics = compute_portfolio_metrics(min_vol_weights, returns, alpha, start, end)
+            min_vol_returns = min_vol_metrics["returns"]
+            min_vol_downside = min_vol_metrics["downside"]
+            min_vol_var = min_vol_metrics["var"]
+            min_vol_cvar = min_vol_metrics["cvar"]
+            min_vol_beta = min_vol_metrics["beta"]
+            min_vol_annualized_return = min_vol_metrics["annualized_return"]
+            min_vol_annualized_vol = min_vol_metrics["annualized_vol"]
+            min_vol_sharpe = min_vol_metrics["sharpe"]
+            min_vol_sortino = min_vol_metrics["sortino"]
+
             # Create metrics columns
             col1, col2 = st.columns(2)
             
@@ -1833,24 +1852,17 @@ with tabs[2]:
             st.plotly_chart(fig, use_container_width=True)
             
             # Calculate and display metrics
-            max_ret_returns = returns.dot(list(max_ret_weights.values()))
-            max_ret_downside = np.std(max_ret_returns[max_ret_returns < 0])
-            max_ret_var = np.percentile(-max_ret_returns, (1 - alpha) * 100)
-            max_ret_cvar = -max_ret_returns[max_ret_returns <= -max_ret_var].mean()
-            
-            # Add more metrics
-            try:
-                spy = get_benchmark_prices(start, end).pct_change(fill_method=None).dropna().loc[max_ret_returns.index]
-                max_ret_beta = np.cov(max_ret_returns, spy)[0, 1] / np.var(spy)
-            except:
-                max_ret_beta = np.nan
-                
-            # Calculate additional metrics
-            max_ret_annualized_return = max_ret["Return"] * 252
-            max_ret_annualized_vol = max_ret["Volatility"] * np.sqrt(252)
-            max_ret_sharpe = max_ret_annualized_return / max_ret_annualized_vol if max_ret_annualized_vol > 0 else 0
-            max_ret_sortino = max_ret_annualized_return / (max_ret_downside * np.sqrt(252)) if max_ret_downside > 0 else 0
-            
+            max_ret_metrics = compute_portfolio_metrics(max_ret_weights, returns, alpha, start, end)
+            max_ret_returns = max_ret_metrics["returns"]
+            max_ret_downside = max_ret_metrics["downside"]
+            max_ret_var = max_ret_metrics["var"]
+            max_ret_cvar = max_ret_metrics["cvar"]
+            max_ret_beta = max_ret_metrics["beta"]
+            max_ret_annualized_return = max_ret_metrics["annualized_return"]
+            max_ret_annualized_vol = max_ret_metrics["annualized_vol"]
+            max_ret_sharpe = max_ret_metrics["sharpe"]
+            max_ret_sortino = max_ret_metrics["sortino"]
+
             # Create metrics columns
             col1, col2 = st.columns(2)
             
@@ -1948,26 +1960,17 @@ with tabs[2]:
             
             # Calculate and display metrics
             equal_weights_array = np.array(list(equal_weights_dict.values()))
-            equal_returns = returns.dot(equal_weights_array)
-            equal_downside = np.std(equal_returns[equal_returns < 0])
-            equal_var = np.percentile(-equal_returns, (1 - alpha) * 100)
-            equal_cvar = -equal_returns[equal_returns <= -equal_var].mean()
-            
-            # Add more metrics
-            try:
-                spy = get_benchmark_prices(start, end).pct_change(fill_method=None).dropna().loc[equal_returns.index]
-                equal_beta = np.cov(equal_returns, spy)[0, 1] / np.var(spy)
-            except:
-                equal_beta = np.nan
-                
-            # Calculate additional metrics
-            equal_mean_return = np.dot(equal_weights_array, mean_r)
-            equal_volatility = np.sqrt(np.dot(equal_weights_array.T, np.dot(cov, equal_weights_array)))
-            equal_annualized_return = equal_mean_return * 252
-            equal_annualized_vol = equal_volatility * np.sqrt(252)
-            equal_sharpe = equal_annualized_return / equal_annualized_vol if equal_annualized_vol > 0 else 0
-            equal_sortino = equal_annualized_return / (equal_downside * np.sqrt(252)) if equal_downside > 0 else 0
-            
+            equal_metrics = compute_portfolio_metrics(equal_weights_array, returns, alpha, start, end)
+            equal_returns = equal_metrics["returns"]
+            equal_downside = equal_metrics["downside"]
+            equal_var = equal_metrics["var"]
+            equal_cvar = equal_metrics["cvar"]
+            equal_beta = equal_metrics["beta"]
+            equal_annualized_return = equal_metrics["annualized_return"]
+            equal_annualized_vol = equal_metrics["annualized_vol"]
+            equal_sharpe = equal_metrics["sharpe"]
+            equal_sortino = equal_metrics["sortino"]
+
             # Create metrics columns
             col1, col2 = st.columns(2)
             
@@ -2028,7 +2031,7 @@ with tabs[2]:
             
             # Calculate risk contribution for each asset
             cov_matrix = returns.cov().values
-            equal_port_vol = equal_volatility
+            equal_port_vol = equal_returns.std()
             
             # Marginal contribution to risk
             equal_marginal_contrib = np.dot(cov_matrix, equal_weights_array) / equal_port_vol
